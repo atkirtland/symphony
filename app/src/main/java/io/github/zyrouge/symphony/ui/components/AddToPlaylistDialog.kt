@@ -36,7 +36,6 @@ fun AddToPlaylistDialog(
         derivedStateOf {
             allPlaylistsIds
                 .mapNotNull { context.symphony.groove.playlist.get(it) }
-                .filter { it.isNotLocal }
                 .toMutableStateList()
         }
     }
@@ -70,6 +69,11 @@ fun AddToPlaylistDialog(
                             },
                             title = {
                                 Text(playlist.title)
+                            },
+                            subtitle = {
+                                if (playlist.isLocal) {
+                                    Text(context.symphony.t.LocalPlaylist)
+                                }
                             },
                             options = { expanded, onDismissRequest ->
                                 PlaylistDropdownMenu(

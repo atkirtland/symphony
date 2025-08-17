@@ -189,6 +189,16 @@ class PlaylistRepository(private val symphony: Symphony) {
                 songIds
             }
         }
+        
+        // Save to m3u file if it's a local playlist
+        if (playlist.isLocal && playlist.uri != null) {
+            try {
+                savePlaylistToUri(updated, playlist.uri)
+            } catch (err: Exception) {
+                Logger.error("PlaylistRepository", "failed to save local playlist", err)
+            }
+        }
+        
         symphony.groove.coroutineScope.launch {
             symphony.database.playlists.update(updated)
         }

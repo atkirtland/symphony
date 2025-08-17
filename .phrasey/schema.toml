@@ -453,6 +453,9 @@ name = "AppBuiltIn"
 name = "LocalStorage"
 
 [[keys]]
+name = "LocalPlaylist"
+
+[[keys]]
 name = "PlayingXofY"
 parameters = ["x", "y"]
 
