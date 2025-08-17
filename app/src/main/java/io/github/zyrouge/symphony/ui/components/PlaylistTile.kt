@@ -51,6 +51,7 @@ import io.github.zyrouge.symphony.ui.helpers.ViewContext
 import io.github.zyrouge.symphony.ui.theme.ThemeColors
 import io.github.zyrouge.symphony.ui.view.PlaylistViewRoute
 import io.github.zyrouge.symphony.utils.Logger
+import kotlinx.coroutines.launch
 
 @Composable
 fun PlaylistTile(context: ViewContext, playlist: Playlist) {
@@ -147,22 +148,24 @@ fun PlaylistDropdownMenu(
         ActivityResultContracts.CreateDocument(MediaExposer.MIMETYPE_M3U)
     ) { uri ->
         uri?.let { _ ->
-            try {
-                context.symphony.groove.playlist.savePlaylistToUri(playlist, uri)
-                Toast.makeText(
-                    context.activity,
-                    context.symphony.t.ExportedX(playlist.title),
-                    Toast.LENGTH_SHORT,
-                ).show()
-            } catch (err: Exception) {
-                Logger.error("PlaylistTile", "export failed (activity result)", err)
-                Toast.makeText(
-                    context.activity,
-                    context.symphony.t.ExportFailedX(
-                        err.localizedMessage ?: err.toString()
-                    ),
-                    Toast.LENGTH_SHORT,
-                ).show()
+            context.symphony.groove.coroutineScope.launch {
+                try {
+                    context.symphony.groove.playlist.savePlaylistToUri(playlist, uri)
+                    Toast.makeText(
+                        context.activity,
+                        context.symphony.t.ExportedX(playlist.title),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                } catch (err: Exception) {
+                    Logger.error("PlaylistTile", "export failed (activity result)", err)
+                    Toast.makeText(
+                        context.activity,
+                        context.symphony.t.ExportFailedX(
+                            err.localizedMessage ?: err.toString()
+                        ),
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                }
             }
         }
     }
@@ -231,20 +234,18 @@ fun PlaylistDropdownMenu(
                 showAddToPlaylistDialog = true
             }
         )
-        if (playlist.isNotLocal) {
-            DropdownMenuItem(
-                leadingIcon = {
-                    Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
-                },
-                text = {
-                    Text(context.symphony.t.ManageSongs)
-                },
-                onClick = {
-                    onDismissRequest()
-                    showSongsPicker = true
-                }
-            )
-        }
+        DropdownMenuItem(
+            leadingIcon = {
+                Icon(Icons.AutoMirrored.Filled.PlaylistAdd, null)
+            },
+            text = {
+                Text(context.symphony.t.ManageSongs)
+            },
+            onClick = {
+                onDismissRequest()
+                showSongsPicker = true
+            }
+        )
         DropdownMenuItem(
             leadingIcon = {
                 Icon(Icons.Filled.Info, null)

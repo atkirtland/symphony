@@ -9,11 +9,14 @@ import io.github.zyrouge.symphony.utils.FuzzySearcher
 import io.github.zyrouge.symphony.utils.KeyGenerator
 import io.github.zyrouge.symphony.utils.Logger
 import io.github.zyrouge.symphony.utils.mutate
+import io.github.zyrouge.symphony.utils.SimplePath
 import io.github.zyrouge.symphony.utils.withCase
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.io.FileNotFoundException
 import java.util.concurrent.ConcurrentHashMap
 
@@ -25,6 +28,7 @@ class PlaylistRepository(private val symphony: Symphony) {
     }
 
     private val cache = ConcurrentHashMap<String, Playlist>()
+    private val fileWriteMutex = Mutex() // Prevent concurrent writes to the same file
     internal val idGenerator = KeyGenerator.TimeIncremental()
     private val searcher = FuzzySearcher<String>(
         options = listOf(FuzzySearchOption({ v -> get(v)?.title?.let { compareString(it) } }))
@@ -174,13 +178,33 @@ class PlaylistRepository(private val symphony: Symphony) {
 
     fun update(id: String, songIds: List<String>) {
         val playlist = get(id) ?: return
-        val updated = Playlist(
-            id = id,
-            title = playlist.title,
-            songPaths = songIds.mapNotNull { symphony.groove.song.get(it)?.path },
-            uri = playlist.uri,
-            path = playlist.path,
-        )
+        
+        val updated = if (playlist.isLocal) {
+            // For local playlists, convert full paths to relative paths for m3u files
+            val songPaths = songIds.mapNotNull { songId ->
+                symphony.groove.song.get(songId)?.path?.let { fullPath ->
+                    // Try to find a relative path that works with the playlist's context
+                    findRelativePathForPlaylist(fullPath, playlist)
+                }
+            }
+            Playlist(
+                id = id,
+                title = playlist.title,
+                songPaths = songPaths,
+                uri = playlist.uri,
+                path = playlist.path,
+            )
+        } else {
+            // For in-app playlists, use full paths as before
+            Playlist(
+                id = id,
+                title = playlist.title,
+                songPaths = songIds.mapNotNull { symphony.groove.song.get(it)?.path },
+                uri = playlist.uri,
+                path = playlist.path,
+            )
+        }
+        
         cache[id] = updated
         emitUpdateId()
         emitCount()
@@ -192,10 +216,12 @@ class PlaylistRepository(private val symphony: Symphony) {
         
         // Save to m3u file if it's a local playlist
         if (playlist.isLocal && playlist.uri != null) {
-            try {
-                savePlaylistToUri(updated, playlist.uri)
-            } catch (err: Exception) {
-                Logger.error("PlaylistRepository", "failed to save local playlist", err)
+            symphony.groove.coroutineScope.launch {
+                try {
+                    savePlaylistToUri(updated, playlist.uri)
+                } catch (err: Exception) {
+                    Logger.error("PlaylistRepository", "failed to save local playlist", err)
+                }
             }
         }
         
@@ -226,11 +252,29 @@ class PlaylistRepository(private val symphony: Symphony) {
     fun isFavoritesPlaylist(playlist: Playlist) = playlist.id == FAVORITE_PLAYLIST
     fun isBuiltInPlaylist(playlist: Playlist) = isFavoritesPlaylist(playlist)
 
-    fun savePlaylistToUri(playlist: Playlist, uri: Uri) {
-        val outputStream = symphony.applicationContext.contentResolver.openOutputStream(uri, "w")
-        outputStream?.use {
-            val content = playlist.songPaths.joinToString("\n")
-            it.write(content.toByteArray())
+    suspend fun savePlaylistToUri(playlist: Playlist, uri: Uri) {
+        fileWriteMutex.withLock {
+            try {
+                // Use atomic write mode to prevent corruption
+                val outputStream = symphony.applicationContext.contentResolver.openOutputStream(uri, "wt")
+                outputStream?.use { stream ->
+                    val content = if (playlist.songPaths.isEmpty()) {
+                        // Empty playlist - write empty content to clear the file
+                        ""
+                    } else {
+                        // Ensure each path is properly separated with newlines
+                        playlist.songPaths.joinToString("\n")
+                    }
+                    
+                    // Write with explicit UTF-8 encoding to prevent character corruption
+                    val bytes = content.toByteArray(Charsets.UTF_8)
+                    stream.write(bytes)
+                    stream.flush()
+                }
+            } catch (e: Exception) {
+                Logger.error("PlaylistRepository", "Failed to save playlist to URI: ${uri}", e)
+                throw e
+            }
         }
     }
 
@@ -248,6 +292,62 @@ class PlaylistRepository(private val symphony: Symphony) {
             getFavorites().getSongIds(symphony)
         }
         emitUpdateId()
+    }
+
+    /**
+     * Find the best relative path for a song file relative to the playlist's location
+     */
+    private fun findRelativePathForPlaylist(fullPath: String, playlist: Playlist): String {
+        // If the playlist has a path context, calculate relative path
+        playlist.path?.let { playlistPath ->
+            val songPath = SimplePath(fullPath)
+            val playlistDir = SimplePath(playlistPath).parent
+            
+            playlistDir?.let { dir ->
+                // Try to find the relative path from playlist directory to song
+                val relativePath = findRelativePath(songPath, dir)
+                if (relativePath != null) {
+                    return relativePath
+                }
+            }
+        }
+        
+        // Fallback: just use the filename
+        return SimplePath(fullPath).name
+    }
+
+    /**
+     * Find relative path from source directory to target file, if possible
+     */
+    private fun findRelativePath(target: SimplePath, source: SimplePath): String? {
+        // Find common ancestor
+        val targetParts = target.parts
+        val sourceParts = source.parts
+        
+        var commonIndex = 0
+        while (commonIndex < targetParts.size && commonIndex < sourceParts.size && 
+               targetParts[commonIndex] == sourceParts[commonIndex]) {
+            commonIndex++
+        }
+        
+        // If no common ancestor, can't create relative path
+        if (commonIndex == 0) {
+            return null
+        }
+        
+        // Calculate relative path
+        val upLevels = sourceParts.size - commonIndex
+        val relativeParts = mutableListOf<String>()
+        
+        // Add ".." for each level we need to go up
+        repeat(upLevels) {
+            relativeParts.add("..")
+        }
+        
+        // Add the remaining parts from target
+        relativeParts.addAll(targetParts.subList(commonIndex, targetParts.size))
+        
+        return relativeParts.joinToString("/")
     }
 
     companion object {

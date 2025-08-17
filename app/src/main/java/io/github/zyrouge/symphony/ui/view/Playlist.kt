@@ -131,7 +131,7 @@ fun PlaylistView(context: ViewContext, route: PlaylistViewRoute) {
                         type = SongListType.Playlist,
                         disableHeartIcon = isFavoritesPlaylist,
                         trailingOptionsContent = { _, song, onDismissRequest ->
-                            playlist?.takeIf { it.isNotLocal }?.let {
+                            playlist?.let {
                                 DropdownMenuItem(
                                     leadingIcon = {
                                         Icon(
